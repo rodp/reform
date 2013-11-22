@@ -21,3 +21,9 @@ module.exports = ->
     test "Fake gets the 'disabled' class when disabled", 1, ->
         setup [], "disabled"
         ok $fake.is(".disabled"), "Fake should have class 'disabled'"
+
+    test "The selected value is shown as title", 1, ->
+        setup [{ value: 1, text: 'apple' }, { value: 2, text: 'orange' }]
+        $fake.click()
+        $('.reform-selectbox-item[value=2]').click();
+        ok $fake.contents().filter(-> @nodeType is Node.TEXT_NODE)[0].textContent == 'orange', "Select and selected option labels should match"

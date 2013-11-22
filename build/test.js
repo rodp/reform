@@ -1,839 +1,14 @@
-var require = function (file, cwd) {
-    var resolved = require.resolve(file, cwd || '/');
-    var mod = require.modules[resolved];
-    if (!mod) throw new Error(
-        'Failed to resolve module ' + file + ', tried ' + resolved
-    );
-    var res = mod._cached ? mod._cached : mod();
-    return res;
-}
-
-require.paths = [];
-require.modules = {};
-require.extensions = [".js",".coffee"];
-
-require._core = {
-    'assert': true,
-    'events': true,
-    'fs': true,
-    'path': true,
-    'vm': true
-};
-
-require.resolve = (function () {
-    return function (x, cwd) {
-        if (!cwd) cwd = '/';
-        
-        if (require._core[x]) return x;
-        var path = require.modules.path();
-        cwd = path.resolve('/', cwd);
-        var y = cwd || '/';
-        
-        if (x.match(/^(?:\.\.?\/|\/)/)) {
-            var m = loadAsFileSync(path.resolve(y, x))
-                || loadAsDirectorySync(path.resolve(y, x));
-            if (m) return m;
-        }
-        
-        var n = loadNodeModulesSync(x, y);
-        if (n) return n;
-        
-        throw new Error("Cannot find module '" + x + "'");
-        
-        function loadAsFileSync (x) {
-            if (require.modules[x]) {
-                return x;
-            }
-            
-            for (var i = 0; i < require.extensions.length; i++) {
-                var ext = require.extensions[i];
-                if (require.modules[x + ext]) return x + ext;
-            }
-        }
-        
-        function loadAsDirectorySync (x) {
-            x = x.replace(/\/+$/, '');
-            var pkgfile = x + '/package.json';
-            if (require.modules[pkgfile]) {
-                var pkg = require.modules[pkgfile]();
-                var b = pkg.browserify;
-                if (typeof b === 'object' && b.main) {
-                    var m = loadAsFileSync(path.resolve(x, b.main));
-                    if (m) return m;
-                }
-                else if (typeof b === 'string') {
-                    var m = loadAsFileSync(path.resolve(x, b));
-                    if (m) return m;
-                }
-                else if (pkg.main) {
-                    var m = loadAsFileSync(path.resolve(x, pkg.main));
-                    if (m) return m;
-                }
-            }
-            
-            return loadAsFileSync(x + '/index');
-        }
-        
-        function loadNodeModulesSync (x, start) {
-            var dirs = nodeModulesPathsSync(start);
-            for (var i = 0; i < dirs.length; i++) {
-                var dir = dirs[i];
-                var m = loadAsFileSync(dir + '/' + x);
-                if (m) return m;
-                var n = loadAsDirectorySync(dir + '/' + x);
-                if (n) return n;
-            }
-            
-            var m = loadAsFileSync(x);
-            if (m) return m;
-        }
-        
-        function nodeModulesPathsSync (start) {
-            var parts;
-            if (start === '/') parts = [ '' ];
-            else parts = path.normalize(start).split('/');
-            
-            var dirs = [];
-            for (var i = parts.length - 1; i >= 0; i--) {
-                if (parts[i] === 'node_modules') continue;
-                var dir = parts.slice(0, i + 1).join('/') + '/node_modules';
-                dirs.push(dir);
-            }
-            
-            return dirs;
-        }
-    };
-})();
-
-require.alias = function (from, to) {
-    var path = require.modules.path();
-    var res = null;
-    try {
-        res = require.resolve(from + '/package.json', '/');
-    }
-    catch (err) {
-        res = require.resolve(from, '/');
-    }
-    var basedir = path.dirname(res);
-    
-    var keys = (Object.keys || function (obj) {
-        var res = [];
-        for (var key in obj) res.push(key)
-        return res;
-    })(require.modules);
-    
-    for (var i = 0; i < keys.length; i++) {
-        var key = keys[i];
-        if (key.slice(0, basedir.length + 1) === basedir + '/') {
-            var f = key.slice(basedir.length);
-            require.modules[to + f] = require.modules[basedir + f];
-        }
-        else if (key === basedir) {
-            require.modules[to] = require.modules[basedir];
-        }
-    }
-};
-
-require.define = function (filename, fn) {
-    var dirname = require._core[filename]
-        ? ''
-        : require.modules.path().dirname(filename)
-    ;
-    
-    var require_ = function (file) {
-        return require(file, dirname)
-    };
-    require_.resolve = function (name) {
-        return require.resolve(name, dirname);
-    };
-    require_.modules = require.modules;
-    require_.define = require.define;
-    var module_ = { exports : {} };
-    
-    require.modules[filename] = function () {
-        require.modules[filename]._cached = module_.exports;
-        fn.call(
-            module_.exports,
-            require_,
-            module_,
-            module_.exports,
-            dirname,
-            filename
-        );
-        require.modules[filename]._cached = module_.exports;
-        return module_.exports;
-    };
-};
-
-if (typeof process === 'undefined') process = {};
-
-if (!process.nextTick) process.nextTick = (function () {
-    var queue = [];
-    var canPost = typeof window !== 'undefined'
-        && window.postMessage && window.addEventListener
-    ;
-    
-    if (canPost) {
-        window.addEventListener('message', function (ev) {
-            if (ev.source === window && ev.data === 'browserify-tick') {
-                ev.stopPropagation();
-                if (queue.length > 0) {
-                    var fn = queue.shift();
-                    fn();
-                }
-            }
-        }, true);
-    }
-    
-    return function (fn) {
-        if (canPost) {
-            queue.push(fn);
-            window.postMessage('browserify-tick', '*');
-        }
-        else setTimeout(fn, 0);
-    };
-})();
-
-if (!process.title) process.title = 'browser';
-
-if (!process.binding) process.binding = function (name) {
-    if (name === 'evals') return require('vm')
-    else throw new Error('No such module')
-};
-
-if (!process.cwd) process.cwd = function () { return '.' };
-
-if (!process.env) process.env = {};
-if (!process.argv) process.argv = [];
-
-require.define("path", function (require, module, exports, __dirname, __filename) {
-function filter (xs, fn) {
-    var res = [];
-    for (var i = 0; i < xs.length; i++) {
-        if (fn(xs[i], i, xs)) res.push(xs[i]);
-    }
-    return res;
-}
-
-// resolves . and .. elements in a path array with directory names there
-// must be no slashes, empty elements, or device names (c:\) in the array
-// (so also no leading and trailing slashes - it does not distinguish
-// relative and absolute paths)
-function normalizeArray(parts, allowAboveRoot) {
-  // if the path tries to go above the root, `up` ends up > 0
-  var up = 0;
-  for (var i = parts.length; i >= 0; i--) {
-    var last = parts[i];
-    if (last == '.') {
-      parts.splice(i, 1);
-    } else if (last === '..') {
-      parts.splice(i, 1);
-      up++;
-    } else if (up) {
-      parts.splice(i, 1);
-      up--;
-    }
-  }
-
-  // if the path is allowed to go above the root, restore leading ..s
-  if (allowAboveRoot) {
-    for (; up--; up) {
-      parts.unshift('..');
-    }
-  }
-
-  return parts;
-}
-
-// Regex to split a filename into [*, dir, basename, ext]
-// posix version
-var splitPathRe = /^(.+\/(?!$)|\/)?((?:.+?)?(\.[^.]*)?)$/;
-
-// path.resolve([from ...], to)
-// posix version
-exports.resolve = function() {
-var resolvedPath = '',
-    resolvedAbsolute = false;
-
-for (var i = arguments.length; i >= -1 && !resolvedAbsolute; i--) {
-  var path = (i >= 0)
-      ? arguments[i]
-      : process.cwd();
-
-  // Skip empty and invalid entries
-  if (typeof path !== 'string' || !path) {
-    continue;
-  }
-
-  resolvedPath = path + '/' + resolvedPath;
-  resolvedAbsolute = path.charAt(0) === '/';
-}
-
-// At this point the path should be resolved to a full absolute path, but
-// handle relative paths to be safe (might happen when process.cwd() fails)
-
-// Normalize the path
-resolvedPath = normalizeArray(filter(resolvedPath.split('/'), function(p) {
-    return !!p;
-  }), !resolvedAbsolute).join('/');
-
-  return ((resolvedAbsolute ? '/' : '') + resolvedPath) || '.';
-};
-
-// path.normalize(path)
-// posix version
-exports.normalize = function(path) {
-var isAbsolute = path.charAt(0) === '/',
-    trailingSlash = path.slice(-1) === '/';
-
-// Normalize the path
-path = normalizeArray(filter(path.split('/'), function(p) {
-    return !!p;
-  }), !isAbsolute).join('/');
-
-  if (!path && !isAbsolute) {
-    path = '.';
-  }
-  if (path && trailingSlash) {
-    path += '/';
-  }
-  
-  return (isAbsolute ? '/' : '') + path;
-};
-
-
-// posix version
-exports.join = function() {
-  var paths = Array.prototype.slice.call(arguments, 0);
-  return exports.normalize(filter(paths, function(p, index) {
-    return p && typeof p === 'string';
-  }).join('/'));
-};
-
-
-exports.dirname = function(path) {
-  var dir = splitPathRe.exec(path)[1] || '';
-  var isWindows = false;
-  if (!dir) {
-    // No dirname
-    return '.';
-  } else if (dir.length === 1 ||
-      (isWindows && dir.length <= 3 && dir.charAt(1) === ':')) {
-    // It is just a slash or a drive letter with a slash
-    return dir;
-  } else {
-    // It is a full dirname, strip trailing slash
-    return dir.substring(0, dir.length - 1);
-  }
-};
-
-
-exports.basename = function(path, ext) {
-  var f = splitPathRe.exec(path)[2] || '';
-  // TODO: make this comparison case-insensitive on windows?
-  if (ext && f.substr(-1 * ext.length) === ext) {
-    f = f.substr(0, f.length - ext.length);
-  }
-  return f;
-};
-
-
-exports.extname = function(path) {
-  return splitPathRe.exec(path)[3] || '';
-};
-
-});
-
-require.define("/lib_test/checkbox_test.js", function (require, module, exports, __dirname, __filename) {
-// Generated by CoffeeScript 1.4.0
+;(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);throw new Error("Cannot find module '"+o+"'")}var f=n[o]={exports:{}};t[o][0].call(f.exports,function(e){var n=t[o][1][e];return s(n?n:e)},f,f.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+// Generated by CoffeeScript 1.6.3
 (function() {
-  var CheckBox, _ref;
-
-  if ((_ref = window.$) == null) {
-    window.$ = require("jquery-commonjs");
-  }
-
-  CheckBox = require("../lib/checkbox");
-
-  module.exports = function() {
-    var $fake, $orig, setup;
-    QUnit.module("CheckBox");
-    $orig = null;
-    $fake = null;
-    setup = function(attrs) {
-      if (attrs == null) {
-        attrs = "";
-      }
-      $orig = $("<input type=\"checkbox\" class=\"reform-checkbox\" " + attrs + ">");
-      $orig.appendTo("#qunit-fixture");
-      new CheckBox($orig.get(0));
-      return $fake = $orig.parent();
-    };
-    test("The fake wraps the original", 1, function() {
-      setup();
-      return ok($fake.is(".reform-checkbox-fake"), "Parent should be the fake");
-    });
-    test("Fake gets the 'disabled' class when disabled", 1, function() {
-      setup("disabled");
-      return ok($fake.is(".disabled"), "Fake should have class 'disabled'");
-    });
-    asyncTest("Fake gets the 'checked' class", 1, function() {
-      setup();
-      $orig.attr("checked", true).trigger("change");
-      return setTimeout((function() {
-        ok($fake.is(".checked"), "Fake should have class 'checked'");
-        return start();
-      }), 0);
-    });
-    return asyncTest("States must match before and after the fake is clicked", 2, function() {
-      var match;
-      setup();
-      match = function() {
-        ok($fake.is(".checked") === $orig.is(":checked"), "States should be the same");
-        return start();
-      };
-      match();
-      stop();
-      $orig.attr("checked", true).trigger("change");
-      return setTimeout(match, 0);
-    });
-  };
-
-}).call(this);
-
-});
-
-require.define("/lib/checkbox.js", function (require, module, exports, __dirname, __filename) {
-// Generated by CoffeeScript 1.4.0
-(function() {
-  var CheckBox, _ref,
+  var AutocompleteBox, Cache,
     __bind = function(fn, me){ return function(){ return fn.apply(me, arguments); }; };
 
-  if ((_ref = window.$) == null) {
-    window.$ = require("jquery-commonjs");
-  }
-
-  CheckBox = (function() {
-
-    function CheckBox(input) {
-      this.refresh = __bind(this.refresh, this);
-
-      var _this = this;
-      this.orig = $(input);
-      if (this.orig.is(".reformed")) {
-        return;
-      }
-      if (this.orig.is(":radio")) {
-        this.siblings = $("[name='" + (this.orig.attr("name")) + "']").not(this.orig);
-      }
-      this.fake = $("<label/>");
-      this.fake.attr("class", this.orig.attr("class"));
-      this.orig.hide().attr("class", "reformed");
-      this.fake.removeClass("reform-checkbox").addClass("reform-checkbox-fake");
-      if (this.orig.is(":checked")) {
-        this.fake.addClass("checked");
-      }
-      if (this.orig.is(":disabled")) {
-        this.fake.addClass("disabled");
-      }
-      if (this.orig.is(":radio")) {
-        this.fake.addClass("radio");
-      }
-      this.orig.after(this.fake).appendTo(this.fake);
-      this.fake.on("mousedown", function(e) {
-        return e.preventDefault();
-      });
-      this.orig.on("reform.sync change DOMSubtreeModified", function() {
-        return setTimeout(_this.refresh, 0);
-      });
-    }
-
-    CheckBox.prototype.refresh = function() {
-      var _ref1;
-      this.fake.toggleClass("disabled", this.orig.is(":disabled"));
-      this.fake.removeClass("checked");
-      if (this.orig.is(":checked")) {
-        this.fake.addClass("checked");
-      }
-      return (_ref1 = this.siblings) != null ? _ref1.each(function() {
-        return $(this).parent().removeClass("checked");
-      }) : void 0;
-    };
-
-    return CheckBox;
-
-  })();
-
-  module.exports = CheckBox;
-
-}).call(this);
-
-});
-
-require.define("/lib_test/selectbox_test.js", function (require, module, exports, __dirname, __filename) {
-// Generated by CoffeeScript 1.4.0
-(function() {
-  var SelectBox, _ref;
-
-  if ((_ref = window.$) == null) {
-    window.$ = require("jquery-commonjs");
-  }
-
-  SelectBox = require("../lib/selectbox");
-
-  module.exports = function() {
-    var $fake, $orig, setup;
-    QUnit.module("SelectBox");
-    $orig = null;
-    $fake = null;
-    setup = function(options, attrs) {
-      if (options == null) {
-        options = [];
-      }
-      if (attrs == null) {
-        attrs = "";
-      }
-      $orig = $("<select class=\"reform-selectbox\" " + attrs + ">" + (options.map(function(opt) {
-        return "<option value=\"" + opt.value + "\">" + opt.text + "</option>";
-      }).join("")) + "</select>");
-      $orig.appendTo("#qunit-fixture");
-      new SelectBox($orig.get(0));
-      return $fake = $orig.parent();
-    };
-    test("The fake wraps the original", 1, function() {
-      setup();
-      return ok($fake.is(".reform-selectbox-fake"), "Parent should be the fake");
-    });
-    return test("Fake gets the 'disabled' class when disabled", 1, function() {
-      setup([], "disabled");
-      return ok($fake.is(".disabled"), "Fake should have class 'disabled'");
-    });
-  };
-
-}).call(this);
-
-});
-
-require.define("/lib/selectbox.js", function (require, module, exports, __dirname, __filename) {
-// Generated by CoffeeScript 1.4.0
-(function() {
-  var SelectBox, _ref,
-    __bind = function(fn, me){ return function(){ return fn.apply(me, arguments); }; };
-
-  if ((_ref = window.$) == null) {
-    window.$ = require("jquery-commonjs");
-  }
-
-  SelectBox = (function() {
-
-    function SelectBox(select) {
-      var _this = this;
-      this.select = select;
-      this.refresh = __bind(this.refresh, this);
-
-      this.close = __bind(this.close, this);
-
-      this.open = __bind(this.open, this);
-
-      this.options = __bind(this.options, this);
-
-      this.orig = $(this.select);
-      if (this.orig.is(".reformed")) {
-        return;
-      }
-      this.body = $("body");
-      this.fake = $("<div/>");
-      this.fake.attr("tabindex", 0);
-      this.fake.attr("class", this.orig.attr("class"));
-      this.orig.hide().attr("class", "reformed");
-      this.fake.removeClass("reform-selectbox").addClass("reform-selectbox-fake");
-      if (this.orig.is(":disabled")) {
-        this.fake.addClass("disabled");
-      }
-      this.refresh();
-      this.orig.after(this.fake).appendTo(this.fake);
-      this.fake.on("keyup", function(ev) {
-        if (ev.keyCode === 27) {
-          ev.preventDefault();
-          return ev.stopPropagation();
-        }
-      });
-      this.fake.on("keydown", function(ev) {
-        var $current, $item, $nextItem, done, goDown, goUp, itemDoesNotExist, itemIsDisabled;
-        ev.preventDefault();
-        ev.stopPropagation();
-        if (_this.orig.is("[multiple]")) {
-          return;
-        }
-        _this.fake.focus();
-        goUp = ev.keyCode === 38;
-        goDown = ev.keyCode === 40;
-        if (goUp || goDown) {
-          if (!(_this.floater != null)) {
-            return _this.open();
-          } else {
-            $current = $('.hover', _this.floater).length === 0 ? $('.selected', _this.floater) : $('.hover', _this.floater);
-            if (goUp) {
-              $nextItem = $current.prev().length === 0 ? $current.parent().children().last() : $current.prev();
-            } else {
-              $nextItem = $current.next().length === 0 ? $current.parent().children().first() : $current.next();
-            }
-            _this.hover($nextItem);
-            return _this.scrollTo($nextItem);
-          }
-        } else if (ev.keyCode === 13) {
-          $item = $(_this.floater).find('.hover');
-          itemDoesNotExist = $item.length === 0;
-          itemIsDisabled = $item.is(".disabled");
-          if (itemDoesNotExist || itemIsDisabled) {
-            return;
-          }
-          $item.siblings().andSelf().removeClass("selected");
-          $item.addClass("selected");
-          _this.orig.val(_this.value()).trigger("change");
-          return _this.close();
-        } else if (ev.keyCode === 27) {
-          if (_this.floater != null) {
-            return _this.close();
-          }
-        } else {
-          done = false;
-          return _this.$list.children().each(function(i, item) {
-            if (!done) {
-              if ($(item).text().charAt(0).toLowerCase() === String.fromCharCode(ev.keyCode).toLowerCase()) {
-                done = true;
-                _this.hover($(item));
-                return _this.scrollTo($(item));
-              }
-            }
-          });
-        }
-      });
-      this.floater = null;
-      this.fake.on("click", function(e) {
-        if (_this.orig.is(":disabled")) {
-          return;
-        }
-        e.stopPropagation();
-        if (_this.floater === null) {
-          return _this.open();
-        } else {
-          return _this.close();
-        }
-      });
-      this.fake.on("mousedown", function(e) {
-        return e.preventDefault();
-      });
-      this.orig.on("reform.sync change DOMSubtreeModified", this.refresh);
-      this.body.on("reform.open", function(e) {
-        if (e.target !== _this.select) {
-          return _this.close();
-        }
-      });
-      $('.reform-selectbox-options').remove();
-    }
-
-    SelectBox.prototype.hover = function($item) {
-      $item.siblings().andSelf().removeClass("hover");
-      return $item.addClass("hover");
-    };
-
-    SelectBox.prototype.scrollTo = function($item) {
-      var $container, newScrollTop, scrollTop,
-        _this = this;
-      $container = $item.parent();
-      newScrollTop = $item.offset().top - $container.offset().top + $container.scrollTop();
-      this.ignoreMouse = true;
-      if (newScrollTop > ($container.outerHeight() - $item.outerHeight())) {
-        scrollTop = newScrollTop - $container.outerHeight() + $item.outerHeight();
-        $container.scrollTop(scrollTop);
-      } else {
-        $container.scrollTop(0);
-      }
-      if (this.to) {
-        clearTimeout(this.to);
-      }
-      return this.to = setTimeout(function() {
-        return _this.ignoreMouse = false;
-      }, 500);
-    };
-
-    SelectBox.prototype.options = function() {
-      var _this = this;
-      if (this.floater == null) {
-        return;
-      }
-      this.fake.focus();
-      this.floater.empty();
-      this.$list = $("<div/>").appendTo(this.floater);
-      this.$list.attr("class", "reform-selectbox-list");
-      return this.orig.find("option").each(function(i, option) {
-        var $item, $option;
-        $option = $(option);
-        $item = $("<div/>");
-        $item.attr("class", "reform-selectbox-item");
-        if ($option.is(":selected")) {
-          $item.addClass("selected");
-        }
-        if ($option.is(":disabled")) {
-          $item.addClass("disabled");
-        }
-        $item.attr("title", $option.attr("title"));
-        $item.attr("value", $option.val());
-        $item.text($option.text());
-        $item.appendTo(_this.$list);
-        $item.on("mousedown", function(e) {
-          return e.preventDefault();
-        });
-        $item.hover(function() {
-          if (!_this.ignoreMouse) {
-            return _this.hover($item);
-          }
-        });
-        return $item.on("click", function(e) {
-          if ($item.is('.disabled')) {
-            return;
-          }
-          if (_this.orig.is("[multiple]")) {
-            $item.toggleClass("selected");
-            e.stopPropagation();
-          } else {
-            $item.siblings().andSelf().removeClass("selected");
-            $item.addClass("selected");
-          }
-          return _this.orig.val(_this.value()).trigger("change");
-        });
-      });
-    };
-
-    SelectBox.prototype.value = function() {
-      return this.$list.find(".reform-selectbox-item.selected").map(function() {
-        return $(this).val();
-      });
-    };
-
-    SelectBox.prototype.open = function() {
-      var $window, pos;
-      this.orig.trigger("reform.open");
-      this.floater = $("<div/>");
-      this.floater.attr("class", "reform-selectbox-options");
-      this.floater.css("min-width", this.fake.outerWidth());
-      this.floater.addClass(this.orig.data("options-class"));
-      this.body.append(this.floater);
-      this.options();
-      this.body.one("click", this.close);
-      pos = this.fake.offset();
-      this.floater.show();
-      $window = $(window);
-      if (pos.top + this.floater.outerHeight() > $window.height()) {
-        pos.top = pos.top - this.floater.outerHeight() + this.fake.outerHeight();
-      }
-      if (pos.left + this.floater.outerWidth() > $window.width()) {
-        pos.left = pos.left - this.floater.outerWidth() + this.fake.outerWidth();
-      }
-      return this.floater.css(pos);
-    };
-
-    SelectBox.prototype.close = function() {
-      var _ref1;
-      if ((_ref1 = this.floater) != null) {
-        _ref1.remove();
-      }
-      return this.floater = null;
-    };
-
-    SelectBox.prototype.refresh = function() {
-      var plural, selected, title;
-      this.fake.toggleClass("disabled", this.orig.is(":disabled"));
-      title = this.orig.data('title');
-      if (!title) {
-        selected = this.orig.find("option").filter(function() {
-          return this.selected && $(this).data("count-option") !== "no";
-        });
-        plural = this.orig.data("plural");
-        title = (plural != null) && selected.length > 1 ? "" + selected.length + " " + plural : selected.map(function() {
-          return $(this).text();
-        }).get().join(", ");
-        if (!title) {
-          title = this.orig.attr("title");
-        }
-        if (title == null) {
-          title = "Select";
-        }
-      }
-      this.fake.contents().filter(function() {
-        return this.nodeType === Node.TEXT_NODE;
-      }).remove();
-      this.fake.append(document.createTextNode(title));
-      return this.options();
-    };
-
-    return SelectBox;
-
-  })();
-
-  module.exports = SelectBox;
-
-}).call(this);
-
-});
-
-require.define("/lib_test/autocompletebox_test.js", function (require, module, exports, __dirname, __filename) {
-// Generated by CoffeeScript 1.4.0
-(function() {
-  var AutocompleteBox, _ref;
-
-  if ((_ref = window.$) == null) {
-    window.$ = require("jquery-commonjs");
-  }
-
-  AutocompleteBox = require("../lib/autocompletebox");
-
-  module.exports = function() {
-    var $fake, $orig, setup;
-    QUnit.module("AutocompleteBox");
-    $orig = null;
-    $fake = null;
-    setup = function(options, attrs) {
-      if (options == null) {
-        options = [];
-      }
-      if (attrs == null) {
-        attrs = "";
-      }
-      $orig = $("<select class=\"reform-autocompletebox\" " + attrs + ">" + (options.map(function(opt) {
-        return "<option value=\"" + opt.value + "\">" + opt.text + "</option>";
-      }).join("")) + "</select>");
-      $orig.appendTo("#qunit-fixture");
-      new AutocompleteBox($orig.get(0));
-      return $fake = $orig.parent();
-    };
-    test("The fake wraps the original", 1, function() {
-      setup();
-      return ok($fake.is(".reform-autocompletebox-fake"), "Parent should be the fake");
-    });
-    return test("Title input created", 1, function() {
-      setup();
-      return ok($fake.find(':first-child').hasClass("reform-autocompletebox-input"), "Fake should have title input");
-    });
-  };
-
-}).call(this);
-
-});
-
-require.define("/lib/autocompletebox.js", function (require, module, exports, __dirname, __filename) {
-// Generated by CoffeeScript 1.4.0
-(function() {
-  var AutocompleteBox, Cache, _ref,
-    __bind = function(fn, me){ return function(){ return fn.apply(me, arguments); }; };
-
-  if ((_ref = window.$) == null) {
+  if (window.$ == null) {
     window.$ = require("jquery-commonjs");
   }
 
   AutocompleteBox = (function() {
-
     AutocompleteBox.prototype.KEY = {
       UP: 38,
       DOWN: 40,
@@ -851,25 +26,15 @@ require.define("/lib/autocompletebox.js", function (require, module, exports, __
         _this = this;
       this.select = select;
       this.onChange = __bind(this.onChange, this);
-
       this.parse = __bind(this.parse, this);
-
       this.request = __bind(this.request, this);
-
       this.colorTitles = __bind(this.colorTitles, this);
-
       this.refresh = __bind(this.refresh, this);
-
       this.close = __bind(this.close, this);
-
       this.open = __bind(this.open, this);
-
       this.selectCurrent = __bind(this.selectCurrent, this);
-
       this.setHover = __bind(this.setHover, this);
-
       this.fillOptions = __bind(this.fillOptions, this);
-
       this.options = {
         data: [],
         url: null,
@@ -902,7 +67,7 @@ require.define("/lib/autocompletebox.js", function (require, module, exports, __
       $.extend(this.options, inlineOptions);
       this.cache = new Cache(this.options);
       this.body = $("body");
-      if (!(this.options.url != null)) {
+      if (this.options.url == null) {
         this.options.delay = 0;
       }
       this.fake = $("<div/>");
@@ -1084,7 +249,7 @@ require.define("/lib/autocompletebox.js", function (require, module, exports, __
 
     AutocompleteBox.prototype.setHover = function(newSelected) {
       var $list;
-      if (!(this.floater != null)) {
+      if (this.floater == null) {
         return;
       }
       $list = this.floater.find('.' + this.options.listClass);
@@ -1101,7 +266,7 @@ require.define("/lib/autocompletebox.js", function (require, module, exports, __
 
     AutocompleteBox.prototype.selectCurrent = function() {
       var $selected, title, value;
-      if (!(this.floater != null) || this.options.selected === 0) {
+      if ((this.floater == null) || this.options.selected === 0) {
         return;
       }
       $selected = this.floater.find('.' + this.options.listClass).find(':nth-child(' + this.options.selected + ')');
@@ -1142,9 +307,9 @@ require.define("/lib/autocompletebox.js", function (require, module, exports, __
     };
 
     AutocompleteBox.prototype.close = function() {
-      var isSameCaseInsensitive, isSameCaseSensitive, _ref1;
-      if ((_ref1 = this.floater) != null) {
-        _ref1.remove();
+      var isSameCaseInsensitive, isSameCaseSensitive, _ref;
+      if ((_ref = this.floater) != null) {
+        _ref.remove();
       }
       this.floater = null;
       if (this.currentList.length === 1) {
@@ -1282,7 +447,6 @@ require.define("/lib/autocompletebox.js", function (require, module, exports, __
   })();
 
   Cache = (function() {
-
     Cache.prototype.data = {};
 
     Cache.prototype.length = 0;
@@ -1363,12 +527,486 @@ require.define("/lib/autocompletebox.js", function (require, module, exports, __
 
 }).call(this);
 
-});
-
-require.define("/lib_test/test.js", function (require, module, exports, __dirname, __filename) {
-    // Generated by CoffeeScript 1.4.0
+},{"jquery-commonjs":8}],2:[function(require,module,exports){
+// Generated by CoffeeScript 1.6.3
 (function() {
+  var CheckBox,
+    __bind = function(fn, me){ return function(){ return fn.apply(me, arguments); }; };
 
+  if (window.$ == null) {
+    window.$ = require("jquery-commonjs");
+  }
+
+  CheckBox = (function() {
+    function CheckBox(input) {
+      this.refresh = __bind(this.refresh, this);
+      var _this = this;
+      this.orig = $(input);
+      if (this.orig.is(".reformed")) {
+        return;
+      }
+      if (this.orig.is(":radio")) {
+        this.siblings = $("[name='" + (this.orig.attr("name")) + "']").not(this.orig);
+      }
+      this.fake = $("<label/>");
+      this.fake.attr("class", this.orig.attr("class"));
+      this.orig.hide().attr("class", "reformed");
+      this.fake.removeClass("reform-checkbox").addClass("reform-checkbox-fake");
+      if (this.orig.is(":checked")) {
+        this.fake.addClass("checked");
+      }
+      if (this.orig.is(":disabled")) {
+        this.fake.addClass("disabled");
+      }
+      if (this.orig.is(":radio")) {
+        this.fake.addClass("radio");
+      }
+      this.orig.after(this.fake).appendTo(this.fake);
+      this.fake.on("mousedown", function(e) {
+        return e.preventDefault();
+      });
+      this.orig.on("reform.sync change DOMSubtreeModified", function() {
+        return setTimeout(_this.refresh, 0);
+      });
+    }
+
+    CheckBox.prototype.refresh = function() {
+      var _ref;
+      this.fake.toggleClass("disabled", this.orig.is(":disabled"));
+      this.fake.removeClass("checked");
+      if (this.orig.is(":checked")) {
+        this.fake.addClass("checked");
+      }
+      return (_ref = this.siblings) != null ? _ref.each(function() {
+        return $(this).parent().removeClass("checked");
+      }) : void 0;
+    };
+
+    return CheckBox;
+
+  })();
+
+  module.exports = CheckBox;
+
+}).call(this);
+
+},{"jquery-commonjs":8}],3:[function(require,module,exports){
+// Generated by CoffeeScript 1.6.3
+(function() {
+  var SelectBox,
+    __bind = function(fn, me){ return function(){ return fn.apply(me, arguments); }; };
+
+  if (window.$ == null) {
+    window.$ = require("jquery-commonjs");
+  }
+
+  SelectBox = (function() {
+    function SelectBox(select) {
+      var _this = this;
+      this.select = select;
+      this.refresh = __bind(this.refresh, this);
+      this.close = __bind(this.close, this);
+      this.open = __bind(this.open, this);
+      this.options = __bind(this.options, this);
+      this.orig = $(this.select);
+      if (this.orig.is(".reformed")) {
+        return;
+      }
+      this.body = $("body");
+      this.fake = $("<div/>");
+      this.fake.attr("tabindex", 0);
+      this.fake.attr("class", this.orig.attr("class"));
+      this.orig.hide().attr("class", "reformed");
+      this.fake.removeClass("reform-selectbox").addClass("reform-selectbox-fake");
+      if (this.orig.is(":disabled")) {
+        this.fake.addClass("disabled");
+      }
+      this.refresh();
+      this.orig.after(this.fake).appendTo(this.fake);
+      this.fake.on("keyup", function(ev) {
+        if (ev.keyCode === 27) {
+          ev.preventDefault();
+          return ev.stopPropagation();
+        }
+      });
+      this.fake.on("keydown", function(ev) {
+        var $current, $item, $nextItem, done, goDown, goUp, itemDoesNotExist, itemIsDisabled;
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (_this.orig.is("[multiple]")) {
+          return;
+        }
+        _this.fake.focus();
+        goUp = ev.keyCode === 38;
+        goDown = ev.keyCode === 40;
+        if (goUp || goDown) {
+          if (_this.floater == null) {
+            return _this.open();
+          } else {
+            $current = $('.hover', _this.floater).length === 0 ? $('.selected', _this.floater) : $('.hover', _this.floater);
+            if (goUp) {
+              $nextItem = $current.prev().length === 0 ? $current.parent().children().last() : $current.prev();
+            } else {
+              $nextItem = $current.next().length === 0 ? $current.parent().children().first() : $current.next();
+            }
+            _this.hover($nextItem);
+            return _this.scrollTo($nextItem);
+          }
+        } else if (ev.keyCode === 13) {
+          $item = $(_this.floater).find('.hover');
+          itemDoesNotExist = $item.length === 0;
+          itemIsDisabled = $item.is(".disabled");
+          if (itemDoesNotExist || itemIsDisabled) {
+            return;
+          }
+          $item.siblings().andSelf().removeClass("selected");
+          $item.addClass("selected");
+          _this.orig.val(_this.value()).trigger("change");
+          return _this.close();
+        } else if (ev.keyCode === 27) {
+          if (_this.floater != null) {
+            return _this.close();
+          }
+        } else {
+          done = false;
+          return _this.$list.children().each(function(i, item) {
+            if (!done) {
+              if ($(item).text().charAt(0).toLowerCase() === String.fromCharCode(ev.keyCode).toLowerCase()) {
+                done = true;
+                _this.hover($(item));
+                return _this.scrollTo($(item));
+              }
+            }
+          });
+        }
+      });
+      this.floater = null;
+      this.fake.on("click", function(e) {
+        if (_this.orig.is(":disabled")) {
+          return;
+        }
+        e.stopPropagation();
+        if (_this.floater === null) {
+          return _this.open();
+        } else {
+          return _this.close();
+        }
+      });
+      this.fake.on("mousedown", function(e) {
+        return e.preventDefault();
+      });
+      this.orig.on("reform.sync change DOMSubtreeModified", this.refresh);
+      this.body.on("reform.open", function(e) {
+        if (e.target !== _this.select) {
+          return _this.close();
+        }
+      });
+      $('.reform-selectbox-options').remove();
+    }
+
+    SelectBox.prototype.hover = function($item) {
+      $item.siblings().andSelf().removeClass("hover");
+      return $item.addClass("hover");
+    };
+
+    SelectBox.prototype.scrollTo = function($item) {
+      var $container, newScrollTop, scrollTop,
+        _this = this;
+      $container = $item.parent();
+      newScrollTop = $item.offset().top - $container.offset().top + $container.scrollTop();
+      this.ignoreMouse = true;
+      if (newScrollTop > ($container.outerHeight() - $item.outerHeight())) {
+        scrollTop = newScrollTop - $container.outerHeight() + $item.outerHeight();
+        $container.scrollTop(scrollTop);
+      } else {
+        $container.scrollTop(0);
+      }
+      if (this.to) {
+        clearTimeout(this.to);
+      }
+      return this.to = setTimeout(function() {
+        return _this.ignoreMouse = false;
+      }, 500);
+    };
+
+    SelectBox.prototype.options = function() {
+      var _this = this;
+      if (this.floater == null) {
+        return;
+      }
+      this.fake.focus();
+      this.floater.empty();
+      this.$list = $("<div/>").appendTo(this.floater);
+      this.$list.attr("class", "reform-selectbox-list");
+      return this.orig.find("option").each(function(i, option) {
+        var $item, $option;
+        $option = $(option);
+        $item = $("<div/>");
+        $item.attr("class", "reform-selectbox-item");
+        if ($option.is(":selected")) {
+          $item.addClass("selected");
+        }
+        if ($option.is(":disabled")) {
+          $item.addClass("disabled");
+        }
+        $item.attr("title", $option.attr("title"));
+        $item.attr("value", $option.val());
+        $item.text($option.text());
+        $item.appendTo(_this.$list);
+        $item.on("mousedown", function(e) {
+          return e.preventDefault();
+        });
+        $item.hover(function() {
+          if (!_this.ignoreMouse) {
+            return _this.hover($item);
+          }
+        });
+        return $item.on("click", function(e) {
+          if ($item.is('.disabled')) {
+            return;
+          }
+          if (_this.orig.is("[multiple]")) {
+            $item.toggleClass("selected");
+            e.stopPropagation();
+          } else {
+            $item.siblings().andSelf().removeClass("selected");
+            $item.addClass("selected");
+          }
+          return _this.orig.val(_this.value()).trigger("change");
+        });
+      });
+    };
+
+    SelectBox.prototype.value = function() {
+      return this.$list.find(".reform-selectbox-item.selected").map(function() {
+        return $(this).attr('value');
+      });
+    };
+
+    SelectBox.prototype.open = function() {
+      var $window, pos;
+      this.orig.trigger("reform.open");
+      this.floater = $("<div/>");
+      this.floater.attr("class", "reform-selectbox-options");
+      this.floater.css("min-width", this.fake.outerWidth());
+      this.floater.addClass(this.orig.data("options-class"));
+      this.body.append(this.floater);
+      this.options();
+      this.body.one("click", this.close);
+      pos = this.fake.offset();
+      this.floater.show();
+      $window = $(window);
+      if (pos.top + this.floater.outerHeight() > $window.height()) {
+        pos.top = pos.top - this.floater.outerHeight() + this.fake.outerHeight();
+      }
+      if (pos.left + this.floater.outerWidth() > $window.width()) {
+        pos.left = pos.left - this.floater.outerWidth() + this.fake.outerWidth();
+      }
+      return this.floater.css(pos);
+    };
+
+    SelectBox.prototype.close = function() {
+      var _ref;
+      if ((_ref = this.floater) != null) {
+        _ref.remove();
+      }
+      return this.floater = null;
+    };
+
+    SelectBox.prototype.refresh = function() {
+      var plural, selected, title;
+      this.fake.toggleClass("disabled", this.orig.is(":disabled"));
+      title = this.orig.data('title');
+      if (!title) {
+        selected = this.orig.find("option").filter(function() {
+          return this.selected && $(this).data("count-option") !== "no";
+        });
+        plural = this.orig.data("plural");
+        title = (plural != null) && selected.length > 1 ? "" + selected.length + " " + plural : selected.map(function() {
+          return $(this).text();
+        }).get().join(", ");
+        if (!title) {
+          title = this.orig.attr("title");
+        }
+        if (title == null) {
+          title = "Select";
+        }
+      }
+      this.fake.contents().filter(function() {
+        return this.nodeType === Node.TEXT_NODE;
+      }).remove();
+      this.fake.append(document.createTextNode(title));
+      return this.options();
+    };
+
+    return SelectBox;
+
+  })();
+
+  module.exports = SelectBox;
+
+}).call(this);
+
+},{"jquery-commonjs":8}],4:[function(require,module,exports){
+// Generated by CoffeeScript 1.6.3
+(function() {
+  var AutocompleteBox;
+
+  if (window.$ == null) {
+    window.$ = require("jquery-commonjs");
+  }
+
+  AutocompleteBox = require("../lib/autocompletebox");
+
+  module.exports = function() {
+    var $fake, $orig, setup;
+    QUnit.module("AutocompleteBox");
+    $orig = null;
+    $fake = null;
+    setup = function(options, attrs) {
+      if (options == null) {
+        options = [];
+      }
+      if (attrs == null) {
+        attrs = "";
+      }
+      $orig = $("<select class=\"reform-autocompletebox\" " + attrs + ">" + (options.map(function(opt) {
+        return "<option value=\"" + opt.value + "\">" + opt.text + "</option>";
+      }).join("")) + "</select>");
+      $orig.appendTo("#qunit-fixture");
+      new AutocompleteBox($orig.get(0));
+      return $fake = $orig.parent();
+    };
+    test("The fake wraps the original", 1, function() {
+      setup();
+      return ok($fake.is(".reform-autocompletebox-fake"), "Parent should be the fake");
+    });
+    return test("Title input created", 1, function() {
+      setup();
+      return ok($fake.find(':first-child').hasClass("reform-autocompletebox-input"), "Fake should have title input");
+    });
+  };
+
+}).call(this);
+
+},{"../lib/autocompletebox":1,"jquery-commonjs":8}],5:[function(require,module,exports){
+// Generated by CoffeeScript 1.6.3
+(function() {
+  var CheckBox;
+
+  if (window.$ == null) {
+    window.$ = require("jquery-commonjs");
+  }
+
+  CheckBox = require("../lib/checkbox");
+
+  module.exports = function() {
+    var $fake, $orig, setup;
+    QUnit.module("CheckBox");
+    $orig = null;
+    $fake = null;
+    setup = function(attrs) {
+      if (attrs == null) {
+        attrs = "";
+      }
+      $orig = $("<input type=\"checkbox\" class=\"reform-checkbox\" " + attrs + ">");
+      $orig.appendTo("#qunit-fixture");
+      new CheckBox($orig.get(0));
+      return $fake = $orig.parent();
+    };
+    test("The fake wraps the original", 1, function() {
+      setup();
+      return ok($fake.is(".reform-checkbox-fake"), "Parent should be the fake");
+    });
+    test("Fake gets the 'disabled' class when disabled", 1, function() {
+      setup("disabled");
+      return ok($fake.is(".disabled"), "Fake should have class 'disabled'");
+    });
+    asyncTest("Fake gets the 'checked' class", 1, function() {
+      setup();
+      $orig.attr("checked", true).trigger("change");
+      return setTimeout((function() {
+        ok($fake.is(".checked"), "Fake should have class 'checked'");
+        return start();
+      }), 0);
+    });
+    return asyncTest("States must match before and after the fake is clicked", 2, function() {
+      var match;
+      setup();
+      match = function() {
+        ok($fake.is(".checked") === $orig.is(":checked"), "States should be the same");
+        return start();
+      };
+      match();
+      stop();
+      $orig.attr("checked", true).trigger("change");
+      return setTimeout(match, 0);
+    });
+  };
+
+}).call(this);
+
+},{"../lib/checkbox":2,"jquery-commonjs":8}],6:[function(require,module,exports){
+// Generated by CoffeeScript 1.6.3
+(function() {
+  var SelectBox;
+
+  if (window.$ == null) {
+    window.$ = require("jquery-commonjs");
+  }
+
+  SelectBox = require("../lib/selectbox");
+
+  module.exports = function() {
+    var $fake, $orig, setup;
+    QUnit.module("SelectBox");
+    $orig = null;
+    $fake = null;
+    setup = function(options, attrs) {
+      if (options == null) {
+        options = [];
+      }
+      if (attrs == null) {
+        attrs = "";
+      }
+      $orig = $("<select class=\"reform-selectbox\" " + attrs + ">" + (options.map(function(opt) {
+        return "<option value=\"" + opt.value + "\">" + opt.text + "</option>";
+      }).join("")) + "</select>");
+      $orig.appendTo("#qunit-fixture");
+      new SelectBox($orig.get(0));
+      return $fake = $orig.parent();
+    };
+    test("The fake wraps the original", 1, function() {
+      setup();
+      return ok($fake.is(".reform-selectbox-fake"), "Parent should be the fake");
+    });
+    test("Fake gets the 'disabled' class when disabled", 1, function() {
+      setup([], "disabled");
+      return ok($fake.is(".disabled"), "Fake should have class 'disabled'");
+    });
+    return test("The selected value is shown as title", 1, function() {
+      setup([
+        {
+          value: 1,
+          text: 'apple'
+        }, {
+          value: 2,
+          text: 'orange'
+        }
+      ]);
+      $fake.click();
+      $('.reform-selectbox-item[value=2]').click();
+      return ok($fake.contents().filter(function() {
+        return this.nodeType === Node.TEXT_NODE;
+      })[0].textContent === 'orange', "Select and selected option labels should match");
+    });
+  };
+
+}).call(this);
+
+},{"../lib/selectbox":3,"jquery-commonjs":8}],7:[function(require,module,exports){
+// Generated by CoffeeScript 1.6.3
+(function() {
   require("./checkbox_test")();
 
   require("./selectbox_test")();
@@ -1377,5 +1015,7 @@ require.define("/lib_test/test.js", function (require, module, exports, __dirnam
 
 }).call(this);
 
-});
-require("/lib_test/test.js");
+},{"./autocompletebox_test":4,"./checkbox_test":5,"./selectbox_test":6}],8:[function(require,module,exports){
+
+},{}]},{},[7])
+;

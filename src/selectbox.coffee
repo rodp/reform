@@ -165,7 +165,7 @@ class SelectBox
                 @orig.val(@value()).trigger "change"
     
     value: ->
-        @$list.find(".reform-selectbox-item.selected").map -> $(@).val()
+        @$list.find(".reform-selectbox-item.selected").map -> $(@).attr('value')
     
     # Generates and opens the options container
     open: =>
